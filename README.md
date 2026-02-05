@@ -1,4 +1,4 @@
-```md
+
 # Database Manager Desktop – Qt & MariaDB
 
 ## Descripción del proyecto
@@ -48,4 +48,4 @@ Al tratarse de una aplicación **Desktop**, el sistema se ejecuta localmente en 
 **Institución:** UNITEC SPS, Honduras  
 **Materia:** Estructura de Datos II / Proyecto Integrador  
 **Año:** 2026
-```
+
