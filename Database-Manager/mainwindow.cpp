@@ -8,6 +8,9 @@
 #include <QPlainTextEdit>
 #include <QMessageBox>
 #include <QVBoxLayout>
+#include <QPushButton>
+#include <QHBoxLayout>
+#include <QPlainTextEdit>
 
 static QString typeOf(QTreeWidgetItem* i){ return i->data(0, Qt::UserRole).toString(); }
 static QString dbOf(QTreeWidgetItem* i){ return i->data(0, Qt::UserRole+1).toString(); }
@@ -27,13 +30,75 @@ MainWindow::MainWindow(QWidget* parent)
             "UID=root;"
             "PWD=cartagena65;",
             &err))
+
     {
-        // mostrar err
+        QMessageBox::critical(this, "Error de conexión", err);
+        return;
     }
+
     loadDatabases();
 }
 
 void MainWindow::buildUi()
+{
+    m_tree = new QTreeWidget;
+    m_tree->setHeaderLabel("Servidor");
+
+    m_results = new ResultTableWidget;
+
+    // Este lo dejas como DDL (solo lectura)
+    m_ddl = new QPlainTextEdit;
+    m_ddl->setReadOnly(true);
+
+    // Editor SQL + botón ejecutar (esto reemplaza el problema)
+    m_sqlEdit = new QPlainTextEdit;
+    m_sqlEdit->setPlaceholderText("Escribe SQL aquí y presiona Ejecutar...");
+    m_btnExec = new QPushButton("Ejecutar");
+
+    auto* execBar = new QWidget;
+    auto* execLay = new QHBoxLayout(execBar);
+    execLay->setContentsMargins(0,0,0,0);
+    execLay->addWidget(m_btnExec);
+
+    // Panel derecho: resultados arriba, DDL medio, SQL abajo
+    auto* right = new QSplitter(Qt::Vertical);
+    right->addWidget(m_results);
+    right->addWidget(m_ddl);
+
+    auto* sqlBlock = new QWidget;
+    auto* sqlLay = new QVBoxLayout(sqlBlock);
+    sqlLay->setContentsMargins(0,0,0,0);
+    sqlLay->addWidget(execBar);
+    sqlLay->addWidget(m_sqlEdit);
+
+    right->addWidget(sqlBlock);
+
+    auto* main = new QSplitter(Qt::Horizontal);
+    main->addWidget(m_tree);
+    main->addWidget(right);
+
+    auto* root = new QWidget;
+    auto* lay = new QVBoxLayout(root);
+    lay->addWidget(main);
+
+    setCentralWidget(root);
+
+    connect(m_tree, &QTreeWidget::itemExpanded, this, [&](QTreeWidgetItem* i){
+        if(typeOf(i)=="db" && i->childCount()==0)
+            loadDbChildren(nameOf(i));
+    });
+
+    connect(m_tree, &QTreeWidget::itemSelectionChanged, this, &MainWindow::showDdlForNode);
+
+    // Ejecutar SQL
+    connect(m_btnExec, &QPushButton::clicked, this, [this](){
+        const QString sql = m_sqlEdit->toPlainText().trimmed();
+        if(sql.isEmpty()) return;
+        executeSql(sql);
+    });
+}
+
+/*void MainWindow::buildUi()
 {
     m_tree = new QTreeWidget;
     m_tree->setHeaderLabel("Servidor");
@@ -64,7 +129,7 @@ void MainWindow::buildUi()
 
     connect(m_tree,&QTreeWidget::itemSelectionChanged,this,&MainWindow::showDdlForNode);
     connect(m_console,&SqlConsoleWidget::executeRequested,this,&MainWindow::executeSql);
-}
+}*/
 
 void MainWindow::loadDatabases()
 {

@@ -2,6 +2,8 @@
 #include <QMainWindow>
 #include "DbSession.h"
 #include "MetadataService.h"
+#include <QMainWindow>
+#include <QPushButton>
 
 class QTreeWidget;
 class QPlainTextEdit;
@@ -28,6 +30,8 @@ private:
     ResultTableWidget* m_results = nullptr;
     QPlainTextEdit* m_ddl = nullptr;
     SqlConsoleWidget* m_console = nullptr;
+    QPlainTextEdit* m_sqlEdit;
+    QPushButton* m_btnExec;
 
     QString m_dsnName = "MariaDBLocal"; // TU DSN REAL
 };
