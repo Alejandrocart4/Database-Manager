@@ -22,6 +22,9 @@ private:
     void showDdlForNode();
     void executeSql(const QString& sql);
 
+    void refreshDatabaseNode(const QString& dbName);
+
+
 private:
     DbSession m_session;
     MetadataService m_meta;
@@ -30,8 +33,7 @@ private:
     ResultTableWidget* m_results = nullptr;
     QPlainTextEdit* m_ddl = nullptr;
     SqlConsoleWidget* m_console = nullptr;
-    QPlainTextEdit* m_sqlEdit;
-    QPushButton* m_btnExec;
 
-    QString m_dsnName = "MariaDBLocal"; // TU DSN REAL
+    QString m_dsnName = "MariaDBLocal";
+
 };

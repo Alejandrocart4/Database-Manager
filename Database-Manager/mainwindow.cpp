@@ -11,6 +11,8 @@
 #include <QPushButton>
 #include <QHBoxLayout>
 #include <QPlainTextEdit>
+#include <QRegularExpression>
+
 
 static QString typeOf(QTreeWidgetItem* i){ return i->data(0, Qt::UserRole).toString(); }
 static QString dbOf(QTreeWidgetItem* i){ return i->data(0, Qt::UserRole+1).toString(); }
@@ -50,28 +52,14 @@ void MainWindow::buildUi()
     m_ddl = new QPlainTextEdit;
     m_ddl->setReadOnly(true);
 
-    // Editor SQL + botón ejecutar (esto reemplaza el problema)
-    m_sqlEdit = new QPlainTextEdit;
-    m_sqlEdit->setPlaceholderText("Escribe SQL aquí y presiona Ejecutar...");
-    m_btnExec = new QPushButton("Ejecutar");
-
-    auto* execBar = new QWidget;
-    auto* execLay = new QHBoxLayout(execBar);
-    execLay->setContentsMargins(0,0,0,0);
-    execLay->addWidget(m_btnExec);
+    // Consola SQL (incluye resaltado + historial + estado)
+    m_console = new SqlConsoleWidget;
 
     // Panel derecho: resultados arriba, DDL medio, SQL abajo
     auto* right = new QSplitter(Qt::Vertical);
     right->addWidget(m_results);
     right->addWidget(m_ddl);
-
-    auto* sqlBlock = new QWidget;
-    auto* sqlLay = new QVBoxLayout(sqlBlock);
-    sqlLay->setContentsMargins(0,0,0,0);
-    sqlLay->addWidget(execBar);
-    sqlLay->addWidget(m_sqlEdit);
-
-    right->addWidget(sqlBlock);
+    right->addWidget(m_console);
 
     auto* main = new QSplitter(Qt::Horizontal);
     main->addWidget(m_tree);
@@ -91,45 +79,8 @@ void MainWindow::buildUi()
     connect(m_tree, &QTreeWidget::itemSelectionChanged, this, &MainWindow::showDdlForNode);
 
     // Ejecutar SQL
-    connect(m_btnExec, &QPushButton::clicked, this, [this](){
-        const QString sql = m_sqlEdit->toPlainText().trimmed();
-        if(sql.isEmpty()) return;
-        executeSql(sql);
-    });
+    connect(m_console, &SqlConsoleWidget::executeRequested, this, &MainWindow::executeSql);
 }
-
-/*void MainWindow::buildUi()
-{
-    m_tree = new QTreeWidget;
-    m_tree->setHeaderLabel("Servidor");
-
-    m_results = new ResultTableWidget;
-    m_ddl = new QPlainTextEdit;
-    m_console = new SqlConsoleWidget;
-
-    auto* right = new QSplitter(Qt::Vertical);
-    right->addWidget(m_results);
-    right->addWidget(m_ddl);
-
-    auto* main = new QSplitter(Qt::Horizontal);
-    main->addWidget(m_tree);
-    main->addWidget(right);
-
-    auto* root = new QWidget;
-    auto* lay = new QVBoxLayout(root);
-    lay->addWidget(main);
-    lay->addWidget(m_console);
-
-    setCentralWidget(root);
-
-    connect(m_tree,&QTreeWidget::itemExpanded,this,[&](QTreeWidgetItem* i){
-        if(typeOf(i)=="db" && i->childCount()==0)
-            loadDbChildren(nameOf(i));
-    });
-
-    connect(m_tree,&QTreeWidget::itemSelectionChanged,this,&MainWindow::showDdlForNode);
-    connect(m_console,&SqlConsoleWidget::executeRequested,this,&MainWindow::executeSql);
-}*/
 
 void MainWindow::loadDatabases()
 {
@@ -167,6 +118,31 @@ void MainWindow::loadDbChildren(const QString& db)
     }
 }
 
+void MainWindow::refreshDatabaseNode(const QString& dbName)
+{
+    auto* root = m_tree->topLevelItem(0);
+    if (!root) return;
+
+    QTreeWidgetItem* dbNode = nullptr;
+    for (int i = 0; i < root->childCount(); ++i) {
+        if (root->child(i)->text(0) == dbName) {
+            dbNode = root->child(i);
+            break;
+        }
+    }
+    if (!dbNode) return;
+
+    // Limpia hijos actuales
+    dbNode->takeChildren();
+
+    // Vuelve a cargar (esto recrea “Tablas” y sus items)
+    loadDbChildren(dbName);
+
+    // Mantén expandido
+    dbNode->setExpanded(true);
+}
+
+
 void MainWindow::showDdlForNode()
 {
     auto* it = m_tree->currentItem();
@@ -176,7 +152,132 @@ void MainWindow::showDdlForNode()
         m_ddl->setPlainText(m_meta.showCreateTable(dbOf(it),nameOf(it)));
 }
 
+static QString normalizeShowTablesFrom(QString sql)
+{
+    // Captura SHOW TABLES FROM <identificador> donde el identificador puede venir
+    // como `db`, "db", 'db' o incluso ""db"".
+    static const QRegularExpression re(
+        R"((?i)^\s*show\s+tables\s+from\s+(.+?)\s*;?\s*$)"
+        );
+
+    auto m = re.match(sql);
+    if (!m.hasMatch())
+        return sql;
+
+    QString db = m.captured(1).trimmed();
+
+    // Quita ; final si venía pegado
+    if (db.endsWith(";"))
+        db.chop(1);
+
+    // Limpia comillas dobles duplicadas: ""db"" -> "db"
+    while (db.startsWith("\"\"") && db.endsWith("\"\"") && db.size() >= 4) {
+        db = db.mid(2, db.size() - 4);
+        db = db.trimmed();
+    }
+
+    // Quita delimitadores conocidos
+    if ((db.startsWith('`') && db.endsWith('`')) ||
+        (db.startsWith('"') && db.endsWith('"')) ||
+        (db.startsWith('\'') && db.endsWith('\''))) {
+        db = db.mid(1, db.size() - 2).trimmed();
+    }
+
+    return QString("SHOW TABLES FROM `%1`;").arg(db.replace("`",""));
+}
+
+static QString firstTokenUpper(const QString& sql)
+{
+    QString s = sql.trimmed();
+    if (s.isEmpty()) return {};
+
+    // -- comment
+    while (s.startsWith("--")) {
+        int nl = s.indexOf('\n');
+        if (nl < 0) return {};
+        s = s.mid(nl + 1).trimmed();
+    }
+
+    // /* comment */
+    while (s.startsWith("/*")) {
+        int end = s.indexOf("*/");
+        if (end < 0) return {};
+        s = s.mid(end + 2).trimmed();
+    }
+
+    // primer "token"
+    int i = 0;
+    while (i < s.size() && !s[i].isSpace() && s[i] != ';') i++;
+    return s.left(i).toUpper();
+}
+
+static bool isDbLevelDdl(const QString& sql)
+{
+    const QString t = firstTokenUpper(sql);
+    if (t == "CREATE" || t == "DROP" || t == "ALTER" || t == "RENAME") {
+        const QString u = sql.trimmed().toUpper();
+
+        return u.contains(" DATABASE ") || u.contains(" SCHEMA ");
+    }
+    return false;
+}
+
+static bool isTableLevelDdlOrDmlThatAffectsMetadata(const QString& sql)
+{
+    const QString t = firstTokenUpper(sql);
+    if (t == "CREATE" || t == "DROP" || t == "ALTER" || t == "RENAME" || t == "TRUNCATE")
+        return true;
+
+    return false;
+}
+
 void MainWindow::executeSql(const QString& sql)
 {
-    m_results->setQuery(sql,"odbc_conn");
+
+    QString selectedDb;
+    if (auto* it = m_tree->currentItem()) {
+        const QString type = typeOf(it);
+
+        if (type == "db") {
+            selectedDb = nameOf(it);
+        } else if (type == "table") {
+            selectedDb = dbOf(it);
+        }
+    }
+
+    QString err;
+    const bool ok = m_results->setQuery(sql, "odbc_conn", &err);
+
+    if (!ok) {
+        m_console->setStatusError(err);
+        return;
+    }
+
+    m_console->setStatusOk("OK");
+
+    // Refrescar metadatos SOLO si hubo cambios estructurales
+    if (isDbLevelDdl(sql)) {
+        loadDatabases();
+
+        if (!selectedDb.isEmpty()) {
+            auto* root = m_tree->topLevelItem(0);
+            if (root) {
+                for (int i=0; i<root->childCount(); ++i) {
+                    if (root->child(i)->text(0) == selectedDb) {
+                        root->child(i)->setExpanded(true);
+                        break;
+                    }
+                }
+            }
+        }
+        return;
+    }
+
+    if (isTableLevelDdlOrDmlThatAffectsMetadata(sql)) {
+        if (selectedDb.isEmpty()) {
+            loadDatabases();
+        } else {
+            refreshDatabaseNode(selectedDb);
+        }
+    }
 }
