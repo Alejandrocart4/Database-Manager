@@ -27,6 +27,7 @@ if(${QT_VERSION_MAJOR} GREATER_EQUAL 6)
         metadataservice.h metadataservice.cpp
         resulttablewidget.h resulttablewidget.cpp
         sqlconsolewidget.h sqlconsolewidget.cpp
+        logindialog.h logindialog.cpp
     )
 # Define target properties for Android with Qt 6 as:
 #    set_property(TARGET Database-Manager APPEND PROPERTY QT_ANDROID_PACKAGE_SOURCE_DIR

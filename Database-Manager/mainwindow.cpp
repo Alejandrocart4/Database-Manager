@@ -1,7 +1,10 @@
 #include "MainWindow.h"
 #include "ResultTableWidget.h"
 #include "SqlConsoleWidget.h"
+#include "LoginDialog.h"
 
+#include <QApplication>
+#include <QClipboard>
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
 #include <QSplitter>
@@ -12,6 +15,14 @@
 #include <QHBoxLayout>
 #include <QPlainTextEdit>
 #include <QRegularExpression>
+#include <QFileDialog>
+#include <QFile>
+#include <QTextStream>
+#include <QMenu>
+#include <QDir>
+#include <QDateTime>
+
+
 
 
 static QString typeOf(QTreeWidgetItem* i){ return i->data(0, Qt::UserRole).toString(); }
@@ -23,23 +34,104 @@ MainWindow::MainWindow(QWidget* parent)
 {
     buildUi();
 
-    QString err;
-    if(!m_session.openWithDsn(
-            "DRIVER={MariaDB ODBC 3.2 Driver};"
-            "SERVER=localhost;"
-            "PORT=3306;"
-            "DATABASE=database-manager;"
-            "UID=root;"
-            "PWD=cartagena65;",
-            &err))
+    m_tree->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(m_tree, &QWidget::customContextMenuRequested, this, [this](const QPoint& pos){
+        QTreeWidgetItem* it = m_tree->itemAt(pos);
+        if (!it) return;
 
-    {
+        QMenu menu;
+
+        // Root "MariaDB": toggle system schemas
+        if (it == m_tree->topLevelItem(0)) {
+            QAction* toggleSystem = menu.addAction(
+                m_showSystemSchemas
+                    ? "Ocultar bases del sistema (information_schema)"
+                    : "Mostrar bases del sistema (information_schema)"
+                );
+
+            QAction* chosen = menu.exec(m_tree->viewport()->mapToGlobal(pos));
+            if (chosen == toggleSystem) {
+                m_showSystemSchemas = !m_showSystemSchemas;
+                loadDatabases();
+            }
+            return;
+        }
+
+        const QString t = typeOf(it);
+
+        // Acciones DDL aplicables (por ahora db y table; puedes extender a view/trigger luego)
+        const bool canDdl = (t == "db" || t == "table");
+
+        QAction* actExport = nullptr;
+        QAction* actCopy   = nullptr;
+        QAction* actToSql  = nullptr;
+
+        if (canDdl) {
+            actExport = menu.addAction("Exportar DDL (archivo)");
+            actCopy   = menu.addAction("Copiar DDL");
+            actToSql  = menu.addAction("Enviar DDL a la consola SQL");
+        }
+
+        QAction* chosen = menu.exec(m_tree->viewport()->mapToGlobal(pos));
+        if (!chosen) return;
+
+        const QString ddl = ddlForItem(it);
+        if (ddl.trimmed().isEmpty()) {
+            QMessageBox::information(this, "DDL", "No hay DDL disponible para este objeto.");
+            return;
+        }
+
+        if (chosen == actCopy) {
+            QApplication::clipboard()->setText(ddl);
+            m_console->setStatusOk("DDL copiado al portapapeles.");
+            return;
+        }
+
+        if (chosen == actToSql) {
+            m_console->setSql(ddl);
+            m_console->setStatusOk("DDL enviado a la consola. Modifica y ejecuta el script si necesitas cambios.");
+            return;
+        }
+
+        if (chosen == actExport) {
+            const QString path = exportFilePathForItem(it);
+
+            QFile f(path);
+            if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) {
+                QMessageBox::critical(this, "Error", "No se pudo escribir el archivo:\n" + path);
+                return;
+            }
+
+            QTextStream out(&f); // Qt6: UTF-8 por defecto
+            out << ddl;
+            if (!ddl.endsWith('\n')) out << "\n";
+            f.close();
+
+            QMessageBox::information(this, "Exportar DDL", "DDL exportado en:\n" + path);
+            return;
+        }
+    });
+
+    LoginDialog dlg(this);
+    if (dlg.exec() != QDialog::Accepted) {
+        // Si cancela, cierra app o deja ventana vacía.
+        // Lo más claro: cerrar.
+        close();
+        return;
+    }
+
+    QString err;
+    if (!m_session.openWithDsn(dlg.dsn(), &err)) {
         QMessageBox::critical(this, "Error de conexión", err);
+        close();
         return;
     }
 
     loadDatabases();
 }
+
+
+
 
 void MainWindow::buildUi()
 {
@@ -48,14 +140,11 @@ void MainWindow::buildUi()
 
     m_results = new ResultTableWidget;
 
-    // Este lo dejas como DDL (solo lectura)
     m_ddl = new QPlainTextEdit;
     m_ddl->setReadOnly(true);
 
-    // Consola SQL (incluye resaltado + historial + estado)
     m_console = new SqlConsoleWidget;
 
-    // Panel derecho: resultados arriba, DDL medio, SQL abajo
     auto* right = new QSplitter(Qt::Vertical);
     right->addWidget(m_results);
     right->addWidget(m_ddl);
@@ -77,26 +166,39 @@ void MainWindow::buildUi()
     });
 
     connect(m_tree, &QTreeWidget::itemSelectionChanged, this, &MainWindow::showDdlForNode);
-
-    // Ejecutar SQL
     connect(m_console, &SqlConsoleWidget::executeRequested, this, &MainWindow::executeSql);
 }
 
+
+
 void MainWindow::loadDatabases()
 {
+    const QStringList systemSchemas = {
+        "information_schema",
+        "performance_schema",
+        "mysql",
+        "sys"
+    };
+
     m_tree->clear();
+
     auto* root = new QTreeWidgetItem(m_tree);
     root->setText(0,"MariaDB");
+    root->setExpanded(true);
 
-    for(const auto& db : m_meta.listDatabases()){
+    const auto dbs = m_meta.listDatabases();
+    for (const auto& db : dbs) {
+        if (!m_showSystemSchemas && systemSchemas.contains(db, Qt::CaseInsensitive))
+            continue;
+
         auto* d = new QTreeWidgetItem(root);
         d->setText(0,db);
         d->setData(0,Qt::UserRole,"db");
         d->setData(0,Qt::UserRole+2,db);
         d->setChildIndicatorPolicy(QTreeWidgetItem::ShowIndicator);
     }
-    root->setExpanded(true);
 }
+
 
 void MainWindow::loadDbChildren(const QString& db)
 {
@@ -148,9 +250,10 @@ void MainWindow::showDdlForNode()
     auto* it = m_tree->currentItem();
     if(!it) return;
 
-    if(typeOf(it)=="table")
-        m_ddl->setPlainText(m_meta.showCreateTable(dbOf(it),nameOf(it)));
+    m_ddl->setPlainText(ddlForItem(it));
 }
+
+
 
 static QString normalizeShowTablesFrom(QString sql)
 {
@@ -280,4 +383,76 @@ void MainWindow::executeSql(const QString& sql)
             refreshDatabaseNode(selectedDb);
         }
     }
+}
+
+
+QString MainWindow::exportBaseDir() const
+{
+    // Carpeta base: directorio de ejecución actual (en Qt Creator se configura en Run settings)
+    QDir dir(QDir::currentPath());
+
+    // Subcarpeta del proyecto para exports
+    const QString sub = "ddl_exports";
+    if (!dir.exists(sub)) {
+        dir.mkpath(sub);
+    }
+
+    return dir.filePath(sub);
+}
+
+QString MainWindow::ddlForItem(QTreeWidgetItem* it)
+{
+    if (!it) return {};
+
+    const QString t = typeOf(it);
+
+    if (t == "table") {
+        return m_meta.showCreateTable(dbOf(it), nameOf(it));
+    }
+
+    if (t == "db") {
+        // MariaDB soporta CREATE DATABASE
+        QString db = nameOf(it);
+        db.replace("`", "");
+        return QString("CREATE DATABASE `%1`;").arg(db);
+    }
+
+    return {};
+}
+
+QString MainWindow::suggestedDdlFileNameForItem(QTreeWidgetItem* it) const
+{
+    if (!it) return "ddl.sql";
+
+    const QString t = typeOf(it);
+
+    if (t == "table") {
+        return QString("%1_%2.sql").arg(dbOf(it), nameOf(it));
+    }
+
+    if (t == "db") {
+        return QString("%1.sql").arg(nameOf(it));
+    }
+
+    return "ddl.sql";
+}
+
+
+QString MainWindow::exportFilePathForItem(QTreeWidgetItem* it) const
+{
+    QDir dir(exportBaseDir());
+    QString fileName = suggestedDdlFileNameForItem(it);
+    if (fileName.trimmed().isEmpty()) fileName = "ddl.sql";
+
+    QString full = dir.filePath(fileName);
+    if (!QFile::exists(full)) return full;
+
+    const QString ts = QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss");
+    const int dot = fileName.lastIndexOf('.');
+    if (dot > 0) {
+        const QString n = fileName.left(dot);
+        const QString ext = fileName.mid(dot);
+        return dir.filePath(QString("%1_%2%3").arg(n, ts, ext));
+    }
+    return dir.filePath(QString("%1_%2").arg(fileName, ts));
 }

@@ -1,10 +1,11 @@
+// mainwindow.h
+
 #pragma once
 #include <QMainWindow>
 #include "DbSession.h"
 #include "MetadataService.h"
-#include <QMainWindow>
-#include <QPushButton>
 
+class QTreeWidgetItem;
 class QTreeWidget;
 class QPlainTextEdit;
 class ResultTableWidget;
@@ -21,9 +22,13 @@ private:
     void loadDbChildren(const QString& dbName);
     void showDdlForNode();
     void executeSql(const QString& sql);
-
     void refreshDatabaseNode(const QString& dbName);
 
+    QString ddlForItem(QTreeWidgetItem* it);
+    QString suggestedDdlFileNameForItem(QTreeWidgetItem* it) const;
+
+    QString exportBaseDir() const;
+    QString exportFilePathForItem(QTreeWidgetItem* it) const;
 
 private:
     DbSession m_session;
@@ -34,6 +39,5 @@ private:
     QPlainTextEdit* m_ddl = nullptr;
     SqlConsoleWidget* m_console = nullptr;
 
-    QString m_dsnName = "MariaDBLocal";
-
+    bool m_showSystemSchemas = false;
 };
