@@ -21,13 +21,13 @@
 #include <QMenu>
 #include <QDir>
 #include <QDateTime>
-
-
-
+#include <QGuiApplication>
+#include <QScreen>
 
 static QString typeOf(QTreeWidgetItem* i){ return i->data(0, Qt::UserRole).toString(); }
 static QString dbOf(QTreeWidgetItem* i){ return i->data(0, Qt::UserRole+1).toString(); }
 static QString nameOf(QTreeWidgetItem* i){ return i->data(0, Qt::UserRole+2).toString(); }
+static QString tableOf(QTreeWidgetItem* i){ return i->data(0, Qt::UserRole+3).toString(); }
 
 MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent), m_meta(&m_session)
@@ -56,66 +56,10 @@ MainWindow::MainWindow(QWidget* parent)
             }
             return;
         }
-
-        const QString t = typeOf(it);
-
-        // Acciones DDL aplicables (por ahora db y table; puedes extender a view/trigger luego)
-        const bool canDdl = (t == "db" || t == "table");
-
-        QAction* actExport = nullptr;
-        QAction* actCopy   = nullptr;
-        QAction* actToSql  = nullptr;
-
-        if (canDdl) {
-            actExport = menu.addAction("Exportar DDL (archivo)");
-            actCopy   = menu.addAction("Copiar DDL");
-            actToSql  = menu.addAction("Enviar DDL a la consola SQL");
-        }
-
-        QAction* chosen = menu.exec(m_tree->viewport()->mapToGlobal(pos));
-        if (!chosen) return;
-
-        const QString ddl = ddlForItem(it);
-        if (ddl.trimmed().isEmpty()) {
-            QMessageBox::information(this, "DDL", "No hay DDL disponible para este objeto.");
-            return;
-        }
-
-        if (chosen == actCopy) {
-            QApplication::clipboard()->setText(ddl);
-            m_console->setStatusOk("DDL copiado al portapapeles.");
-            return;
-        }
-
-        if (chosen == actToSql) {
-            m_console->setSql(ddl);
-            m_console->setStatusOk("DDL enviado a la consola. Modifica y ejecuta el script si necesitas cambios.");
-            return;
-        }
-
-        if (chosen == actExport) {
-            const QString path = exportFilePathForItem(it);
-
-            QFile f(path);
-            if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) {
-                QMessageBox::critical(this, "Error", "No se pudo escribir el archivo:\n" + path);
-                return;
-            }
-
-            QTextStream out(&f); // Qt6: UTF-8 por defecto
-            out << ddl;
-            if (!ddl.endsWith('\n')) out << "\n";
-            f.close();
-
-            QMessageBox::information(this, "Exportar DDL", "DDL exportado en:\n" + path);
-            return;
-        }
     });
 
     LoginDialog dlg(this);
     if (dlg.exec() != QDialog::Accepted) {
-        // Si cancela, cierra app o deja ventana vacía.
-        // Lo más claro: cerrar.
         close();
         return;
     }
@@ -128,10 +72,15 @@ MainWindow::MainWindow(QWidget* parent)
     }
 
     loadDatabases();
+
+    m_ready = true;
+
+    resize(1200, 750);
+
+    setMinimumSize(1100, 650);
+
+    centerOnScreen();
 }
-
-
-
 
 void MainWindow::buildUi()
 {
@@ -167,9 +116,14 @@ void MainWindow::buildUi()
 
     connect(m_tree, &QTreeWidget::itemSelectionChanged, this, &MainWindow::showDdlForNode);
     connect(m_console, &SqlConsoleWidget::executeRequested, this, &MainWindow::executeSql);
+
+    connect(m_tree, &QTreeWidget::itemExpanded, this, [&](QTreeWidgetItem* i){
+        if(typeOf(i)=="db" && i->childCount()==0)
+            loadDbChildren(nameOf(i));
+        if(typeOf(i)=="table" && i->childCount()==0)
+            loadTableChildren(i);
+    });
 }
-
-
 
 void MainWindow::loadDatabases()
 {
@@ -199,7 +153,6 @@ void MainWindow::loadDatabases()
     }
 }
 
-
 void MainWindow::loadDbChildren(const QString& db)
 {
     auto* root = m_tree->topLevelItem(0);
@@ -208,6 +161,7 @@ void MainWindow::loadDbChildren(const QString& db)
     for(int i=0;i<root->childCount();++i)
         if(root->child(i)->text(0)==db) dbNode=root->child(i);
 
+    // TABLAS
     auto* tables = new QTreeWidgetItem(dbNode);
     tables->setText(0,"Tablas");
 
@@ -217,6 +171,103 @@ void MainWindow::loadDbChildren(const QString& db)
         it->setData(0,Qt::UserRole,"table");
         it->setData(0,Qt::UserRole+1,db);
         it->setData(0,Qt::UserRole+2,t);
+
+        // Para que se pueda expandir y cargar índices (flecha visible)
+        it->setChildIndicatorPolicy(QTreeWidgetItem::ShowIndicator);
+        new QTreeWidgetItem(it); // dummy child
+    }
+
+
+    // INDEXES (a nivel de base de datos, estilo DBeaver)
+    auto* indexes = new QTreeWidgetItem(dbNode);
+    indexes->setText(0, "Indices");
+
+    // Reutilizamos la lista de tablas BASE TABLE (ya la estás obteniendo)
+    const auto tablesList = m_meta.listTables(db);
+
+    for (const auto& t : tablesList) {
+        const auto idxs = m_meta.listIndexes(db, t);
+        for (const auto& idx : idxs) {
+            // Formato: tabla.indice  (ej: meta_ahorro.PRIMARY)
+            auto* it = new QTreeWidgetItem(indexes);
+            it->setText(0, QString("%1.%2").arg(t, idx));
+
+            // Reutilizamos el mismo tipo "index" para que el click funcione igual
+            it->setData(0, Qt::UserRole, "index");
+            it->setData(0, Qt::UserRole+1, db);   // db
+            it->setData(0, Qt::UserRole+2, idx);  // index name (PRIMARY, fk_..., etc.)
+            it->setData(0, Qt::UserRole+3, t);    // table
+        }
+    }
+
+
+    // VISTAS
+    auto* views = new QTreeWidgetItem(dbNode);
+    views->setText(0,"Vistas");
+    for (const auto& v : m_meta.listViews(db)) {
+        auto* it = new QTreeWidgetItem(views);
+        it->setText(0, v);
+        it->setData(0, Qt::UserRole, "view");
+        it->setData(0, Qt::UserRole+1, db);
+        it->setData(0, Qt::UserRole+2, v);
+    }
+
+    // FUNCIONES
+    auto* funcs = new QTreeWidgetItem(dbNode);
+    funcs->setText(0,"Funciones");
+    for (const auto& fn : m_meta.listFunctions(db)) {
+        auto* it = new QTreeWidgetItem(funcs);
+        it->setText(0, fn);
+        it->setData(0, Qt::UserRole, "function");
+        it->setData(0, Qt::UserRole+1, db);
+        it->setData(0, Qt::UserRole+2, fn);
+    }
+
+    // PROCEDURES
+    auto* procs = new QTreeWidgetItem(dbNode);
+    procs->setText(0,"Procedimientos");
+    for (const auto& sp : m_meta.listProcedures(db)) {
+        auto* it = new QTreeWidgetItem(procs);
+        it->setText(0, sp);
+        it->setData(0, Qt::UserRole, "procedure");
+        it->setData(0, Qt::UserRole+1, db);
+        it->setData(0, Qt::UserRole+2, sp);
+    }
+
+    // TRIGGERS
+    auto* triggers = new QTreeWidgetItem(dbNode);
+    triggers->setText(0,"Triggers");
+    for (const auto& tr : m_meta.listTriggers(db)) {
+        auto* it = new QTreeWidgetItem(triggers);
+        it->setText(0, tr);
+        it->setData(0, Qt::UserRole, "trigger");
+        it->setData(0, Qt::UserRole+1, db);
+        it->setData(0, Qt::UserRole+2, tr);
+    }
+}
+
+void MainWindow::loadTableChildren(QTreeWidgetItem* tableNode)
+{
+    if (!tableNode || typeOf(tableNode) != "table") return;
+
+    while (tableNode->childCount() > 0) {
+        delete tableNode->takeChild(0);
+    }
+
+    const QString dbName = dbOf(tableNode);
+    const QString tableName = nameOf(tableNode);
+
+    auto* idxFolder = new QTreeWidgetItem(tableNode);
+    idxFolder->setText(0, "Índices");
+
+    const auto idxs = m_meta.listIndexes(dbName, tableName);
+    for (const auto& idx : idxs) {
+        auto* it = new QTreeWidgetItem(idxFolder);
+        it->setText(0, idx);
+        it->setData(0, Qt::UserRole, "index");
+        it->setData(0, Qt::UserRole+1, dbName);
+        it->setData(0, Qt::UserRole+2, idx);
+        it->setData(0, Qt::UserRole+3, tableName);
     }
 }
 
@@ -237,61 +288,43 @@ void MainWindow::refreshDatabaseNode(const QString& dbName)
     // Limpia hijos actuales
     dbNode->takeChildren();
 
-    // Vuelve a cargar (esto recrea “Tablas” y sus items)
+    // Vuelve a cargar
     loadDbChildren(dbName);
 
     // Mantén expandido
     dbNode->setExpanded(true);
 }
 
-
 void MainWindow::showDdlForNode()
 {
     auto* it = m_tree->currentItem();
-    if(!it) return;
+    if (!it) return;
+
+    const QString t = typeOf(it);
+
+    // Caso especial: un índice no tiene "SHOW CREATE INDEX" en MariaDB.
+    // Mostramos el resultado de SHOW INDEX tal como si el usuario lo ejecutara.
+    if (t == "index") {
+        const QString db = dbOf(it);
+        const QString table = tableOf(it);
+        const QString sql = QString("SHOW INDEX FROM %1 FROM %2;")
+                                .arg(DbSession::q(table), DbSession::q(db));
+
+        QString err;
+        const bool ok = m_results->setQuery(sql, "odbc_conn", &err);
+        if (!ok) m_console->setStatusError(err);
+        else     m_console->setStatusOk("OK");
+
+        m_ddl->setPlainText(sql + "\n-- Índice seleccionado: " + nameOf(it));
+        return;
+    }
 
     m_ddl->setPlainText(ddlForItem(it));
 }
 
-
-
-static QString normalizeShowTablesFrom(QString sql)
+static QString firstTokenUpper(QString s)
 {
-    // Captura SHOW TABLES FROM <identificador> donde el identificador puede venir
-    // como `db`, "db", 'db' o incluso ""db"".
-    static const QRegularExpression re(
-        R"((?i)^\s*show\s+tables\s+from\s+(.+?)\s*;?\s*$)"
-        );
-
-    auto m = re.match(sql);
-    if (!m.hasMatch())
-        return sql;
-
-    QString db = m.captured(1).trimmed();
-
-    // Quita ; final si venía pegado
-    if (db.endsWith(";"))
-        db.chop(1);
-
-    // Limpia comillas dobles duplicadas: ""db"" -> "db"
-    while (db.startsWith("\"\"") && db.endsWith("\"\"") && db.size() >= 4) {
-        db = db.mid(2, db.size() - 4);
-        db = db.trimmed();
-    }
-
-    // Quita delimitadores conocidos
-    if ((db.startsWith('`') && db.endsWith('`')) ||
-        (db.startsWith('"') && db.endsWith('"')) ||
-        (db.startsWith('\'') && db.endsWith('\''))) {
-        db = db.mid(1, db.size() - 2).trimmed();
-    }
-
-    return QString("SHOW TABLES FROM `%1`;").arg(db.replace("`",""));
-}
-
-static QString firstTokenUpper(const QString& sql)
-{
-    QString s = sql.trimmed();
+    s = s.trimmed();
     if (s.isEmpty()) return {};
 
     // -- comment
@@ -308,7 +341,6 @@ static QString firstTokenUpper(const QString& sql)
         s = s.mid(end + 2).trimmed();
     }
 
-    // primer "token"
     int i = 0;
     while (i < s.size() && !s[i].isSpace() && s[i] != ';') i++;
     return s.left(i).toUpper();
@@ -319,7 +351,6 @@ static bool isDbLevelDdl(const QString& sql)
     const QString t = firstTokenUpper(sql);
     if (t == "CREATE" || t == "DROP" || t == "ALTER" || t == "RENAME") {
         const QString u = sql.trimmed().toUpper();
-
         return u.contains(" DATABASE ") || u.contains(" SCHEMA ");
     }
     return false;
@@ -336,7 +367,6 @@ static bool isTableLevelDdlOrDmlThatAffectsMetadata(const QString& sql)
 
 void MainWindow::executeSql(const QString& sql)
 {
-
     QString selectedDb;
     if (auto* it = m_tree->currentItem()) {
         const QString type = typeOf(it);
@@ -385,13 +415,10 @@ void MainWindow::executeSql(const QString& sql)
     }
 }
 
-
 QString MainWindow::exportBaseDir() const
 {
-    // Carpeta base: directorio de ejecución actual (en Qt Creator se configura en Run settings)
     QDir dir(QDir::currentPath());
 
-    // Subcarpeta del proyecto para exports
     const QString sub = "ddl_exports";
     if (!dir.exists(sub)) {
         dir.mkpath(sub);
@@ -406,15 +433,38 @@ QString MainWindow::ddlForItem(QTreeWidgetItem* it)
 
     const QString t = typeOf(it);
 
+    if (t == "db") {
+        QString db = nameOf(it);
+        db.replace("`", "");
+        return QString("CREATE DATABASE `%1`;").arg(db);
+    }
+
     if (t == "table") {
         return m_meta.showCreateTable(dbOf(it), nameOf(it));
     }
 
-    if (t == "db") {
-        // MariaDB soporta CREATE DATABASE
-        QString db = nameOf(it);
-        db.replace("`", "");
-        return QString("CREATE DATABASE `%1`;").arg(db);
+    if (t == "view") {
+        return m_meta.showCreateView(dbOf(it), nameOf(it));
+    }
+
+    if (t == "trigger") {
+        return m_meta.showCreateTrigger(dbOf(it), nameOf(it));
+    }
+
+    if (t == "function") {
+        return m_meta.showCreateFunction(dbOf(it), nameOf(it));
+    }
+
+    if (t == "procedure") {
+        return m_meta.showCreateProcedure(dbOf(it), nameOf(it));
+    }
+
+    if (t == "index") {
+        const QString db = dbOf(it);
+        const QString table = tableOf(it);
+        const QString idx = nameOf(it);
+        return QString("SHOW INDEX FROM %1 FROM %2;\n-- Índice seleccionado: %3")
+            .arg(DbSession::q(table), DbSession::q(db), idx);
     }
 
     return {};
@@ -426,17 +476,16 @@ QString MainWindow::suggestedDdlFileNameForItem(QTreeWidgetItem* it) const
 
     const QString t = typeOf(it);
 
-    if (t == "table") {
-        return QString("%1_%2.sql").arg(dbOf(it), nameOf(it));
-    }
-
-    if (t == "db") {
-        return QString("%1.sql").arg(nameOf(it));
-    }
+    if (t == "db")        return QString("%1_database.sql").arg(nameOf(it));
+    if (t == "table")     return QString("%1_table_%2.sql").arg(dbOf(it), nameOf(it));
+    if (t == "view")      return QString("%1_view_%2.sql").arg(dbOf(it), nameOf(it));
+    if (t == "trigger")   return QString("%1_trigger_%2.sql").arg(dbOf(it), nameOf(it));
+    if (t == "function")  return QString("%1_function_%2.sql").arg(dbOf(it), nameOf(it));
+    if (t == "procedure") return QString("%1_procedure_%2.sql").arg(dbOf(it), nameOf(it));
+    if (t == "index")     return QString("%1_index_%2_%3.sql").arg(dbOf(it), tableOf(it), nameOf(it));
 
     return "ddl.sql";
 }
-
 
 QString MainWindow::exportFilePathForItem(QTreeWidgetItem* it) const
 {
@@ -455,4 +504,17 @@ QString MainWindow::exportFilePathForItem(QTreeWidgetItem* it) const
         return dir.filePath(QString("%1_%2%3").arg(n, ts, ext));
     }
     return dir.filePath(QString("%1_%2").arg(fileName, ts));
+}
+
+void MainWindow::centerOnScreen()
+{
+    QScreen* screen = QGuiApplication::primaryScreen();
+    if (!screen) return;
+
+    const QRect avail = screen->availableGeometry();
+    const QPoint center = avail.center();
+
+    this->adjustSize();
+    const QRect r = frameGeometry();
+    move(center.x() - r.width() / 2, center.y() - r.height() / 2);
 }

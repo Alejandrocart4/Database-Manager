@@ -40,7 +40,11 @@ int main(int argc, char *argv[])
     applyDarkTheme(a);
 
     MainWindow w;
-    w.resize(1200, 700);
+
+    if (!w.isReady()) {
+        return 0;
+    }
+
     w.show();
 
     return a.exec();

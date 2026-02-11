@@ -15,11 +15,17 @@ class MainWindow : public QMainWindow {
     Q_OBJECT
 public:
     explicit MainWindow(QWidget* parent = nullptr);
+        bool isReady() const { return m_ready; }
 
 private:
     void buildUi();
     void loadDatabases();
     void loadDbChildren(const QString& dbName);
+    void loadTableChildren(QTreeWidgetItem* tableNode);
+
+    bool m_ready = false;
+    void centerOnScreen();
+
     void showDdlForNode();
     void executeSql(const QString& sql);
     void refreshDatabaseNode(const QString& dbName);
