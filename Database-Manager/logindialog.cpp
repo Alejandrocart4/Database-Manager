@@ -90,8 +90,7 @@ void LoginDialog::buildUi()
 
 void LoginDialog::loadProfiles()
 {
-    // Guardamos en QSettings (INI) dentro del sistema del usuario.
-    // Esto cumple “almacenar múltiples conexiones” sin depender de tablas.
+
     QSettings s("UNITEC", "Database-Manager");
 
     m_items.clear();
@@ -238,7 +237,6 @@ QString LoginDialog::dsn() const
     const QString user = m_user->text().trimmed();
     const QString pass = m_pass->text(); // no trimmed para permitir espacios si existieran
 
-    // DATABASE puede quedar vacío; algunos drivers lo aceptan
     QString dsn = QString("DRIVER={%1};SERVER=%2;PORT=%3;UID=%4;PWD=%5;")
                       .arg(driver, host)
                       .arg(port)

@@ -14,7 +14,6 @@ QStringList MetadataService::listDatabases(){
 }
 
 QStringList MetadataService::listTables(const QString& db){
-    // IMPORTANTE: SHOW TABLES incluye vistas. Para que “Tablas” sea solo BASE TABLE:
     QStringList r; QSqlQuery q(s->db());
     q.exec("SHOW FULL TABLES FROM " + DbSession::q(db) + " WHERE Table_type = 'BASE TABLE'");
     while(q.next()) r << q.value(0).toString();
@@ -67,7 +66,6 @@ QStringList MetadataService::listProcedures(const QString& db)
 
 QStringList MetadataService::listIndexes(const QString& db, const QString& table)
 {
-    // MariaDB: forma correcta (NO usar db.table aquí)
     QSet<QString> uniq;
     QSqlQuery q(s->db());
     q.exec("SHOW INDEX FROM " + DbSession::q(table) + " FROM " + DbSession::q(db));

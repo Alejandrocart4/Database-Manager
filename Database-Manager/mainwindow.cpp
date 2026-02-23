@@ -237,21 +237,16 @@ void MainWindow::loadDbChildren(const QString& db)
     }
 
 
-    // INDEXES (a nivel de base de datos, estilo DBeaver)
     auto* indexes = new QTreeWidgetItem(dbNode);
     indexes->setText(0, "Indices");
 
-    // Reutilizamos la lista de tablas BASE TABLE (ya la estás obteniendo)
     const auto tablesList = m_meta.listTables(db);
 
     for (const auto& t : tablesList) {
         const auto idxs = m_meta.listIndexes(db, t);
         for (const auto& idx : idxs) {
-            // Formato: tabla.indice  (ej: meta_ahorro.PRIMARY)
             auto* it = new QTreeWidgetItem(indexes);
             it->setText(0, QString("%1.%2").arg(t, idx));
-
-            // Reutilizamos el mismo tipo "index" para que el click funcione igual
             it->setData(0, Qt::UserRole, "index");
             it->setData(0, Qt::UserRole+1, db);   // db
             it->setData(0, Qt::UserRole+2, idx);  // index name (PRIMARY, fk_..., etc.)
@@ -361,8 +356,7 @@ void MainWindow::showDdlForNode()
 
     const QString t = typeOf(it);
 
-    // Caso especial: un índice no tiene "SHOW CREATE INDEX" en MariaDB.
-    // Mostramos el resultado de SHOW INDEX tal como si el usuario lo ejecutara.
+
     if (t == "index") {
         const QString db = dbOf(it);
         const QString table = tableOf(it);
@@ -386,14 +380,12 @@ static QString firstTokenUpper(QString s)
     s = s.trimmed();
     if (s.isEmpty()) return {};
 
-    // -- comment
     while (s.startsWith("--")) {
         int nl = s.indexOf('\n');
         if (nl < 0) return {};
         s = s.mid(nl + 1).trimmed();
     }
 
-    // /* comment */
     while (s.startsWith("/*")) {
         int end = s.indexOf("*/");
         if (end < 0) return {};
@@ -477,8 +469,6 @@ void MainWindow::executeSql(const QString& sql)
 QString MainWindow::exportBaseDir() const
 {
     // Intenta guardar dentro de la carpeta del proyecto.
-    // Estrategia: subir desde el currentPath hasta encontrar un marcador típico
-    // (CMakeLists.txt o un *.pro). Si no se encuentra, usa currentPath.
     QDir dir(QDir::currentPath());
     QDir probe = dir;
 
