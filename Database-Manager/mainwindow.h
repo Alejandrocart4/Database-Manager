@@ -15,7 +15,7 @@ class MainWindow : public QMainWindow {
     Q_OBJECT
 public:
     explicit MainWindow(QWidget* parent = nullptr);
-        bool isReady() const { return m_ready; }
+    bool isReady() const { return m_ready; }
 
 private:
     void buildUi();
@@ -31,10 +31,15 @@ private:
     void refreshDatabaseNode(const QString& dbName);
 
     QString ddlForItem(QTreeWidgetItem* it);
+    QString ddlForDatabaseGeneral(const QString& dbName);
     QString suggestedDdlFileNameForItem(QTreeWidgetItem* it) const;
 
     QString exportBaseDir() const;
     QString exportFilePathForItem(QTreeWidgetItem* it) const;
+    QString exportFilePathForDatabaseGeneral(const QString& dbName) const;
+
+    void exportDdlForItem(QTreeWidgetItem* it);
+    void exportDdlGeneralForDatabase(const QString& dbName);
 
 private:
     DbSession m_session;

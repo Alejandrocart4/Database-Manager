@@ -46,6 +46,6 @@ Al tratarse de una aplicación **Desktop**, el sistema se ejecuta localmente en 
 **Nombre:** Jonny Alejandro Gómez Cartagena  
 **Carrera:** Ingeniería en Sistemas Computacionales  
 **Institución:** UNITEC SPS, Honduras  
-**Materia:** Estructura de Datos II / Proyecto Integrador  
+**Materia:** Teoría a la base de datos II / Proyecto Integrador  
 **Año:** 2026
 

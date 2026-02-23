@@ -23,6 +23,7 @@
 #include <QDateTime>
 #include <QGuiApplication>
 #include <QScreen>
+#include <QCoreApplication>
 
 static QString typeOf(QTreeWidgetItem* i){ return i->data(0, Qt::UserRole).toString(); }
 static QString dbOf(QTreeWidgetItem* i){ return i->data(0, Qt::UserRole+1).toString(); }
@@ -39,6 +40,9 @@ MainWindow::MainWindow(QWidget* parent)
         QTreeWidgetItem* it = m_tree->itemAt(pos);
         if (!it) return;
 
+        // Seleccionar item bajo el mouse para que las acciones operen sobre él
+        m_tree->setCurrentItem(it);
+
         QMenu menu;
 
         // Root "MariaDB": toggle system schemas
@@ -48,11 +52,66 @@ MainWindow::MainWindow(QWidget* parent)
                     ? "Ocultar bases del sistema (information_schema)"
                     : "Mostrar bases del sistema (information_schema)"
                 );
+            QAction* refreshAll = menu.addAction("Refrescar");
 
             QAction* chosen = menu.exec(m_tree->viewport()->mapToGlobal(pos));
             if (chosen == toggleSystem) {
                 m_showSystemSchemas = !m_showSystemSchemas;
                 loadDatabases();
+            } else if (chosen == refreshAll) {
+                loadDatabases();
+            }
+            return;
+        }
+
+        const QString t = typeOf(it);
+
+        // Nodo de base de datos
+        if (t == "db") {
+            QAction* genDdl = menu.addAction("Generar DDL");
+            QAction* expDdl = menu.addAction("Exportar DDL");
+            menu.addSeparator();
+            QAction* genAll = menu.addAction("Generar DDL General de la base de datos");
+            QAction* expAll = menu.addAction("Exportar DDL General de la base de datos");
+            menu.addSeparator();
+            QAction* refreshDb = menu.addAction("Refrescar esta base");
+
+            QAction* chosen = menu.exec(m_tree->viewport()->mapToGlobal(pos));
+            if (!chosen) return;
+
+            const QString dbName = nameOf(it);
+            if (chosen == genDdl) {
+                m_ddl->setPlainText(ddlForItem(it));
+            } else if (chosen == expDdl) {
+                exportDdlForItem(it);
+            } else if (chosen == genAll) {
+                m_ddl->setPlainText(ddlForDatabaseGeneral(dbName));
+            } else if (chosen == expAll) {
+                exportDdlGeneralForDatabase(dbName);
+            } else if (chosen == refreshDb) {
+                refreshDatabaseNode(dbName);
+            }
+            return;
+        }
+
+        // Nodos de objetos (tabla/vista/proc/func/trigger/index)
+        const bool isObject = (t == "table" || t == "view" || t == "procedure" || t == "function" || t == "trigger" || t == "index");
+        if (isObject) {
+            QAction* genDdl = menu.addAction("Generar DDL");
+            QAction* expDdl = menu.addAction("Exportar DDL");
+            QAction* copyDdl = menu.addAction("Copiar DDL");
+
+            QAction* chosen = menu.exec(m_tree->viewport()->mapToGlobal(pos));
+            if (!chosen) return;
+
+            if (chosen == genDdl) {
+                m_ddl->setPlainText(ddlForItem(it));
+            } else if (chosen == expDdl) {
+                exportDdlForItem(it);
+            } else if (chosen == copyDdl) {
+                const QString ddl = ddlForItem(it);
+                QApplication::clipboard()->setText(ddl);
+                m_console->setStatusOk("DDL copiado");
             }
             return;
         }
@@ -417,14 +476,49 @@ void MainWindow::executeSql(const QString& sql)
 
 QString MainWindow::exportBaseDir() const
 {
+    // Intenta guardar dentro de la carpeta del proyecto.
+    // Estrategia: subir desde el currentPath hasta encontrar un marcador típico
+    // (CMakeLists.txt o un *.pro). Si no se encuentra, usa currentPath.
     QDir dir(QDir::currentPath());
+    QDir probe = dir;
 
-    const QString sub = "ddl_exports";
-    if (!dir.exists(sub)) {
-        dir.mkpath(sub);
+    auto hasProjectMarker = [](const QDir& d) -> bool {
+        if (d.exists("CMakeLists.txt")) return true;
+        const QStringList pros = d.entryList(QStringList() << "*.pro", QDir::Files);
+        return !pros.isEmpty();
+    };
+
+    for (int up = 0; up < 6; ++up) {
+        if (hasProjectMarker(probe)) {
+            dir = probe;
+            break;
+        }
+        if (!probe.cdUp()) break;
     }
 
+    const QString sub = "ddl_exports";
+    if (!dir.exists(sub)) dir.mkpath(sub);
     return dir.filePath(sub);
+}
+
+static QString stripTrailingSemicolon(QString s)
+{
+    s = s.trimmed();
+    if (s.endsWith(';')) s.chop(1);
+    return s.trimmed();
+}
+
+static QString wrapWithDelimiter(const QString& ddl, const QString& delim)
+{
+    const QString body = stripTrailingSemicolon(ddl);
+    if (body.isEmpty()) return {};
+
+    QString out;
+    out += QString("DELIMITER %1\n").arg(delim);
+    out += body;
+    out += QString("%1\n").arg(delim);
+    out += "DELIMITER ;\n";
+    return out;
 }
 
 QString MainWindow::ddlForItem(QTreeWidgetItem* it)
@@ -470,6 +564,55 @@ QString MainWindow::ddlForItem(QTreeWidgetItem* it)
     return {};
 }
 
+QString MainWindow::ddlForDatabaseGeneral(const QString& dbName)
+{
+    if (dbName.trimmed().isEmpty()) return {};
+
+    const QString db = dbName;
+    QString out;
+    out += "-- DDL General (export)\n";
+    out += "-- Generado: " + QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss") + "\n\n";
+    out += QString("CREATE DATABASE IF NOT EXISTS %1;\n").arg(DbSession::q(db));
+    out += QString("USE %1;\n\n").arg(DbSession::q(db));
+
+    // Tablas (incluye índices dentro del CREATE TABLE)
+    const auto tables = m_meta.listTables(db);
+    for (const auto& t : tables) {
+        out += "-- Tabla: " + t + "\n";
+        out += m_meta.showCreateTable(db, t) + "\n\n";
+    }
+
+    // Vistas
+    const auto views = m_meta.listViews(db);
+    for (const auto& v : views) {
+        out += "-- Vista: " + v + "\n";
+        out += m_meta.showCreateView(db, v) + "\n\n";
+    }
+
+    // Rutinas y triggers requieren delimitador para ejecutarse como script
+    const QString delim = "$$";
+
+    const auto funcs = m_meta.listFunctions(db);
+    for (const auto& fn : funcs) {
+        out += "-- Función: " + fn + "\n";
+        out += wrapWithDelimiter(m_meta.showCreateFunction(db, fn), delim) + "\n";
+    }
+
+    const auto procs = m_meta.listProcedures(db);
+    for (const auto& sp : procs) {
+        out += "-- Procedimiento: " + sp + "\n";
+        out += wrapWithDelimiter(m_meta.showCreateProcedure(db, sp), delim) + "\n";
+    }
+
+    const auto triggers = m_meta.listTriggers(db);
+    for (const auto& tr : triggers) {
+        out += "-- Trigger: " + tr + "\n";
+        out += wrapWithDelimiter(m_meta.showCreateTrigger(db, tr), delim) + "\n";
+    }
+
+    return out;
+}
+
 QString MainWindow::suggestedDdlFileNameForItem(QTreeWidgetItem* it) const
 {
     if (!it) return "ddl.sql";
@@ -504,6 +647,75 @@ QString MainWindow::exportFilePathForItem(QTreeWidgetItem* it) const
         return dir.filePath(QString("%1_%2%3").arg(n, ts, ext));
     }
     return dir.filePath(QString("%1_%2").arg(fileName, ts));
+}
+
+QString MainWindow::exportFilePathForDatabaseGeneral(const QString& dbName) const
+{
+    QDir dir(exportBaseDir());
+    QString fileName = QString("%1_ddl_general.sql").arg(dbName);
+    fileName.replace('`', "");
+    fileName.replace(' ', "_");
+
+    QString full = dir.filePath(fileName);
+    if (!QFile::exists(full)) return full;
+
+    const QString ts = QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss");
+    const int dot = fileName.lastIndexOf('.');
+    if (dot > 0) {
+        const QString n = fileName.left(dot);
+        const QString ext = fileName.mid(dot);
+        return dir.filePath(QString("%1_%2%3").arg(n, ts, ext));
+    }
+    return dir.filePath(QString("%1_%2").arg(fileName, ts));
+}
+
+void MainWindow::exportDdlForItem(QTreeWidgetItem* it)
+{
+    if (!it) return;
+
+    const QString ddl = ddlForItem(it);
+    if (ddl.trimmed().isEmpty()) {
+        QMessageBox::warning(this, "DDL", "No se pudo generar DDL para el nodo seleccionado.");
+        return;
+    }
+
+    const QString path = exportFilePathForItem(it);
+
+    QFile f(path);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        QMessageBox::critical(this, "Exportar DDL", "No se pudo escribir el archivo:\n" + path);
+        return;
+    }
+
+    QTextStream ts(&f);
+    ts << "-- Exportado por Database Manager\n";
+    ts << "-- Fecha: " << QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss") << "\n\n";
+    ts << ddl << "\n";
+    f.close();
+
+    m_console->setStatusOk("Exportado: " + path);
+}
+
+void MainWindow::exportDdlGeneralForDatabase(const QString& dbName)
+{
+    const QString ddl = ddlForDatabaseGeneral(dbName);
+    if (ddl.trimmed().isEmpty()) {
+        QMessageBox::warning(this, "DDL General", "No se pudo generar el DDL general para la base seleccionada.");
+        return;
+    }
+
+    const QString path = exportFilePathForDatabaseGeneral(dbName);
+    QFile f(path);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        QMessageBox::critical(this, "Exportar DDL General", "No se pudo escribir el archivo:\n" + path);
+        return;
+    }
+
+    QTextStream ts(&f);
+    ts << ddl;
+    f.close();
+
+    m_console->setStatusOk("Exportado: " + path);
 }
 
 void MainWindow::centerOnScreen()
