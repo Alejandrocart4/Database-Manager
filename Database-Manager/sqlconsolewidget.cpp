@@ -23,7 +23,7 @@ public:
             "select","from","where","insert","into","values","update","set","delete",
             "create","table","view","drop","alter","database","show","describe","use",
             "join","left","right","inner","outer","on","group","by","order","having",
-            "limit","as","distinct"
+            "limit","as","distinct", "column","databases", "full"
         };
 
         for (const auto& k : keywords) {
