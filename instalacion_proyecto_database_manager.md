@@ -186,8 +186,8 @@ Generar y exportar DDL
 
 ## Autor
 
-Nombre: Jonny Alejandro Gómez Cartagena
-Carrera: Ingeniería en Sistemas Computacionales
-Institución: UNITEC SPS, Honduras
-Materia: Teoría a la base de datos II / Proyecto Integrador
-Año: 2026
+**Nombre:** Jonny Alejandro Gómez Cartagena  
+**Carrera:** Ingeniería en Sistemas Computacionales  
+**Institución:** UNITEC SPS, Honduras  
+**Materia:** Teoría a la base de datos II / Proyecto Integrador  
+**Año:** 2026
